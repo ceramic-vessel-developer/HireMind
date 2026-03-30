@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+import json
+
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 
@@ -28,28 +30,41 @@ class TokenData(BaseModel):
     scopes: list[str] = []
 
 
-class EntryCreate(BaseModel):
-    name: Optional[str]
-    description: Optional[str]
-    link: str
-    tag: int
-    author: Optional[str]
+# Pydantic schema for CV
+class CVBase(BaseModel):
+    user_id: int
+    file_format: str
+    file_key: str
 
 
-class EntryReturn(EntryCreate):
+class CVCreate(BaseModel):
+    file_format: str
+
+    class Config:
+        extra = "forbid"
+
+
+class CVReturn(CVBase):
     id: int
 
     class Config:
         orm_mode = True
 
 
-class TagCreate(BaseModel):
-    name: str
+# Pydantic schema for Result
+class ResultBase(BaseModel):
+    user_id: int
+    cv_id: int
+    joint_score: float
+    advice: str
 
 
-class TagReturn(BaseModel):
+class ResultCreate(ResultBase):
+    pass
+
+
+class ResultReturn(ResultBase):
     id: int
-    name: str
 
     class Config:
         orm_mode = True

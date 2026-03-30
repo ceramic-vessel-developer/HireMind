@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, Text, ForeignKey
+from sqlalchemy import Column, BigInteger, Integer, String, Text, ForeignKey, Float
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -7,27 +7,33 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(BigInteger, primary_key=True, index=True)
-    email = Column(String, unique=True, nullable=False)
-    password = Column(String, nullable=False)
+    email = Column(String(255), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+
+    cvs = relationship("CV", back_populates="user", cascade="all, delete")
+    results = relationship("Result", back_populates="user", cascade="all, delete")
 
 
-class Tag(Base):
-    __tablename__ = "tags"
-
-    id = Column(BigInteger, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False)
-
-    entries = relationship("Entry", back_populates="tag_rel")
-
-
-class Entry(Base):
-    __tablename__ = "entries"
+class CV(Base):
+    __tablename__ = "cvs"
 
     id = Column(BigInteger, primary_key=True, index=True)
-    name = Column(String)
-    description = Column(Text)
-    link = Column(String, unique=True)
-    tag = Column(BigInteger, ForeignKey("tags.id"))
-    author = Column(String)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    file_format = Column(String, nullable=False)
+    file_key = Column(String, unique=True, nullable=False)
 
-    tag_rel = relationship("Tag", back_populates="entries")
+    user = relationship("User", back_populates="cvs")
+    results = relationship("Result", back_populates="cv", cascade="all, delete")
+
+
+class Result(Base):
+    __tablename__ = "results"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    cv_id = Column(Integer, ForeignKey("cvs.id", ondelete="CASCADE"), nullable=False)
+    joint_score = Column(Float, nullable=False)
+    advice = Column(Text, nullable=False)
+
+    user = relationship("User", back_populates="results")
+    cv = relationship("CV", back_populates="results")

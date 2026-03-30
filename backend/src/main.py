@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status, Security
+from fastapi import Depends, FastAPI, HTTPException, status, Security, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import uuid
+import os
+import json
+import tempfile
+import pickle
 
 import CRUD
 import models
@@ -20,6 +31,37 @@ import hashlib
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", scopes={"user": "Zwykly user"})
+
+# Google Drive API setup
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+CREDENTIALS_FILE = 'credentials.json'  # OAuth2 credentials from Google Cloud
+TOKEN_FILE = 'token.pickle'  # Cached token
+GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')  # Optional folder ID
+
+
+def get_drive_service():
+    """Get authenticated Google Drive service."""
+    creds = None
+    
+    # Load saved token if it exists
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'rb') as token:
+            creds = pickle.load(token)
+    
+    # If no valid credentials, perform OAuth2 flow
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CREDENTIALS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # Save the token for next time
+        with open(TOKEN_FILE, 'wb') as token:
+            pickle.dump(creds, token)
+    
+    return build('drive', 'v3', credentials=creds)
 
 app = FastAPI()
 
@@ -126,12 +168,6 @@ def register(user: schemas.UserCreate, session: Session = Depends(get_db)):
     return {"message": "user created successfully"}
 
 
-"""
-    Endpoint sluzacy do logowania. Zwraca token JWT.
-    Aby uzytkownik otrzymal stopien uprawnien "user", w bazie danych musi mu byc przypisana rola o nazwie "user".
-"""
-
-
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
@@ -183,7 +219,153 @@ async def delete_user(id: int, db: Session = Depends(get_db),
     pass
 
 
-# TODO zbadaj cv
-# TODO get results
-# TODO get cv results
+@app.get("/cvs/user/{user_id}", response_model=list[schemas.CVReturn])
+async def get_user_cvs(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    if user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't retrieve cvs for that user")
+    
+    cvs = CRUD.get_cvs_by_user(db, user_id)
+    if not cvs:
+        raise HTTPException(status_code=404, detail="No CVs found for this user")
+    
+    return cvs
+
+
+@app.post("/cvs/user/{user_id}", status_code=201)
+async def create_user_cv(
+    user_id: int,
+    cv: Annotated[str, Form()],
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    if user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't upload cv for that user")
+
+    
+    # Generate UUID for filename
+    file_uuid = str(uuid.uuid4())
+    file_ext = os.path.splitext(file.filename)[1]  # Get file extension
+    filename = f"{file_uuid}{file_ext}"
+    
+    # Save file temporarily to system temp directory
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, filename)
+    
+    with open(temp_path, "wb") as buffer:
+        buffer.write(await file.read())
+    
+    try:
+        # Upload to Google Drive
+        drive_service = get_drive_service()
+    
+        file_metadata = {'name': filename}
+        if GOOGLE_DRIVE_FOLDER_ID:
+            file_metadata['parents'] = [GOOGLE_DRIVE_FOLDER_ID]
+        
+        media = MediaFileUpload(temp_path, mimetype=file.content_type)
+        
+        drive_file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        
+        file_key = drive_file.get('id')
+        
+        # Create CV record in database
+        cv_db = models.CV(
+            user_id=user_id,
+            file_format=cv,
+            file_key=file_key
+        )
+        db.add(cv_db)
+        db.commit()
+        db.refresh(cv_db)
+        
+        return cv_db
+        
+    finally:
+        # Clean up temp file
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception as e:
+            # Log the error but don't fail the request
+            print(f"Warning: Could not delete temp file {temp_path}: {e}")
+
+
+
+@app.post("/cvs/{cv_id}/analyze", status_code=200)
+async def analyze_cv(
+    cv_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    """Download CV from Google Drive and analyze it."""
+    cv = CRUD.get_cv_by_id(db, cv_id)
+    if not cv:
+        raise HTTPException(status_code=404, detail="CV not found")
+    
+    if cv.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't analyze CV for that user")
+    
+    try:
+        # Download CV from Google Drive
+        drive_service = get_drive_service()
+        file_content = drive_service.files().get_media(
+            fileId=cv.file_key
+        ).execute()
+        
+        # TODO: Implement actual CV analysis here
+        # For now, return placeholder response
+        return {
+            "cv_id": cv_id,
+            "analysis": "Placeholder analysis - CV downloaded successfully",
+            "file_size": len(file_content) if file_content else 0
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not download CV: {str(e)}")
+
+
+@app.get("/results/user/{user_id}", response_model=list[schemas.ResultReturn])
+async def get_user_results(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    """Get all results for a user."""
+    if user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't retrieve results for that user")
+    
+    results = CRUD.get_results_by_user(db, user_id)
+    if not results:
+        raise HTTPException(status_code=404, detail="No results found for this user")
+    
+    return results
+
+
+@app.get("/results/cv/{cv_id}", response_model=list[schemas.ResultReturn])
+async def get_cv_results(
+    cv_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    """Get all results for a specific CV."""
+    cv = CRUD.get_cv_by_id(db, cv_id)
+    if not cv:
+        raise HTTPException(status_code=404, detail="CV not found")
+    
+    if cv.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't retrieve results for that CV")
+    
+    results = CRUD.get_results_by_cv(db, cv_id)
+    if not results:
+        raise HTTPException(status_code=404, detail="No results found for this CV")
+    
+    return results
 

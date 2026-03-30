@@ -4,6 +4,7 @@ import schemas
 from sqlalchemy.exc import IntegrityError
 
 
+# User CRUD operations
 def create_user(db: Session, user: schemas.UserCreate):
     db_user = models.User(email=user.email, password=user.password)
     try:
@@ -24,34 +25,64 @@ def get_user_by_email(db: Session, email: str):
     return db.query(models.User).filter(models.User.email == email).first()
 
 
-def create_entry(db: Session, entry: schemas.EntryCreate):
-    db_entry = models.Entry(**entry.dict())
-    db.add(db_entry)
+def delete_user(db: Session, user_id: int):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db.delete(db_user)
+        db.commit()
+    return db_user
+
+
+# CV CRUD operations
+def create_cv(db: Session, cv: schemas.CVCreate):
+    db_cv = models.CV(**cv.dict())
+    db.add(db_cv)
     db.commit()
-    db.refresh(db_entry)
-    return db_entry
+    db.refresh(db_cv)
+    return db_cv
 
 
-def create_tag(db: Session, tag: schemas.TagCreate):
-    db_tag = models.Tag(**tag.dict())
-    db.add(db_tag)
+def get_cv_by_id(db: Session, cv_id: int):
+    return db.query(models.CV).filter(models.CV.id == cv_id).first()
+
+
+def get_cvs_by_user(db: Session, user_id: int):
+    return db.query(models.CV).filter(models.CV.user_id == user_id).all()
+
+
+def delete_cv(db: Session, cv_id: int):
+    db_cv = db.query(models.CV).filter(models.CV.id == cv_id).first()
+    if db_cv:
+        db.delete(db_cv)
+        db.commit()
+    return db_cv
+
+
+# Result CRUD operations
+def create_result(db: Session, result: schemas.ResultCreate):
+    db_result = models.Result(**result.dict())
+    db.add(db_result)
     db.commit()
-    db.refresh(db_tag)
-    return db_tag
+    db.refresh(db_result)
+    return db_result
 
 
-def get_entries(db: Session, skip: int = 0, limit: int = 10):
-    return db.query(models.Entry).offset(skip).limit(limit).all()
+def get_result_by_id(db: Session, result_id: int):
+    return db.query(models.Result).filter(models.Result.id == result_id).first()
 
 
-def get_entries_by_tag(db: Session, tag_id: int, skip: int = 0, limit: int = 10):
-    return db.query(models.Entry).filter(models.Entry.tag == tag_id).offset(skip).limit(limit).all()
+def get_results_by_user(db: Session, user_id: int):
+    return db.query(models.Result).filter(models.Result.user_id == user_id).all()
 
 
-def get_entry_by_id(db: Session, entry_id: int):
-    return db.query(models.Entry).filter(models.Entry.id == entry_id).first()
+def get_results_by_cv(db: Session, cv_id: int):
+    return db.query(models.Result).filter(models.Result.cv_id == cv_id).all()
 
 
-def get_all_tags(db: Session):
-    return db.query(models.Tag).all()
+def delete_result(db: Session, result_id: int):
+    db_result = db.query(models.Result).filter(models.Result.id == result_id).first()
+    if db_result:
+        db.delete(db_result)
+        db.commit()
+    return db_result
 
