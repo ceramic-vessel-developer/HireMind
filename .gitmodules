@@ -1,3 +1,6 @@
+[submodule "backend/src/ats_utils"]
+	path = backend/src/ats_utils
+	url = https://github.com/Akip07/hiremind-ats-ai
 [submodule "frontend"]
 	path = frontend
 	url = https://github.com/Akip07/hiremind-frontend.git
