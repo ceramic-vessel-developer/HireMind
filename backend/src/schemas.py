@@ -68,3 +68,20 @@ class ResultReturn(ResultBase):
 
     class Config:
         orm_mode = True
+
+
+class MatchResult(BaseModel):
+    job_keywords: list[str]
+    resume_keywords: list[str]
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+    coverage_score: float
+    weighted_score: float
+
+
+class MatchAnalysisTextInput(BaseModel):
+    job_offer_text: str
+
+
+class MatchAnalysisURLInput(BaseModel):
+    job_offer_url: str

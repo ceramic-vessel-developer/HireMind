@@ -11,13 +11,11 @@ from passlib.context import CryptContext
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import uuid
 import os
-import json
 import tempfile
 import pickle
 
@@ -27,6 +25,10 @@ import schemas
 from config import ALGORITHM, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, ORIGINS
 from database import SessionLocal
 import hashlib
+
+from pdf_processing import extract_text
+from ats_utils.ats_matcher import ATSMatcher
+from job_offer_scrapper import ScrapperStrategyFactory
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
@@ -300,9 +302,10 @@ async def create_user_cv(
 
 
 
-@app.post("/cvs/{cv_id}/analyze", status_code=200)
+@app.post("/cvs/{cv_id}/analyze/text", status_code=200, response_model=schemas.MatchResult)
 async def analyze_cv(
     cv_id: int,
+    job_offer_input: schemas.MatchAnalysisTextInput,
     db: Session = Depends(get_db),
     current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
 ):
@@ -320,14 +323,67 @@ async def analyze_cv(
         file_content = drive_service.files().get_media(
             fileId=cv.file_key
         ).execute()
-        
-        # TODO: Implement actual CV analysis here
-        # For now, return placeholder response
-        return {
-            "cv_id": cv_id,
-            "analysis": "Placeholder analysis - CV downloaded successfully",
-            "file_size": len(file_content) if file_content else 0
-        }
+
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            tmp.write(file_content)
+            tmp.close()  # important on Windows
+            temp_path = tmp.name
+
+            cv_text = extract_text(temp_path)
+
+            ats_matcher = ATSMatcher()
+            ats_result = ats_matcher.match(cv_text, job_offer_input.job_offer_text)
+
+
+        finally:
+            os.remove(tmp.name)
+
+
+        return ats_result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not download CV: {str(e)}")
+
+
+@app.post("/cvs/{cv_id}/analyze/url", status_code=200, response_model=schemas.MatchResult)
+async def analyze_cv(
+        cv_id: int,
+        job_offer_input: schemas.MatchAnalysisURLInput,
+        db: Session = Depends(get_db),
+        current_user: schemas.UserReturn = Security(get_current_user, scopes=["user"])
+):
+    """Download CV from Google Drive and analyze it."""
+    cv = CRUD.get_cv_by_id(db, cv_id)
+    if not cv:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    if cv.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can't analyze CV for that user")
+
+    try:
+        # Download CV from Google Drive
+        drive_service = get_drive_service()
+        file_content = drive_service.files().get_media(
+            fileId=cv.file_key
+        ).execute()
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            tmp.write(file_content)
+            tmp.close()  # important on Windows
+            temp_path = tmp.name
+
+            cv_text = extract_text(temp_path)
+            scrapper = ScrapperStrategyFactory().get_scrapper()
+            job_offer_text = scrapper.extract_text(job_offer_input.job_offer_url)
+
+            ats_matcher = ATSMatcher()
+            ats_result = ats_matcher.match(cv_text, job_offer_text)
+
+
+        finally:
+            os.remove(tmp.name)
+
+        return ats_result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not download CV: {str(e)}")
 
